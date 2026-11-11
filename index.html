@@ -1,0 +1,1860 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>AI 輪廓擷取塗色遊戲 — Q版色塊填色與 AI 評分系統</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --phone-w: 390px;
+      --phone-h: 844px;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    body {
+      font-family: 'Inter', 'Noto Sans TC', sans-serif;
+      background: radial-gradient(circle at 50% 20%, #f8fafc 0%, #e2e8f0 100%);
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow-x: hidden;
+    }
+    /* iPhone 9:19.5 Frame */
+    .iphone-shell {
+      width: 100%;
+      max-width: 400px;
+      aspect-ratio: 9 / 19.5;
+      background: #ffffff;
+      border-radius: 48px;
+      box-shadow:
+        0 25px 60px -15px rgba(15, 23, 42, 0.18),
+        0 0 0 10px #f1f5f9,
+        0 0 0 12px #cbd5e1,
+        inset 0 0 0 2px #e2e8f0;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .iphone-notch {
+      width: 126px;
+      height: 24px;
+      background: #f1f5f9;
+      border-bottom-left-radius: 16px;
+      border-bottom-right-radius: 16px;
+      margin: 0 auto;
+      flex-shrink: 0;
+      z-index: 20;
+    }
+    /* Palette Grid: 56 colors in 4 neat rows of 14 */
+    .palette-grid {
+      display: grid;
+      grid-template-columns: repeat(14, minmax(0, 1fr));
+      gap: 3px;
+      padding: 6px 8px;
+      background: #ffffff;
+    }
+    .swatch-btn {
+      aspect-ratio: 1 / 1;
+      border-radius: 4px;
+      border: 1px solid rgba(0, 0, 0, 0.12);
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+      cursor: pointer;
+      position: relative;
+    }
+    .swatch-btn:hover {
+      transform: scale(1.18);
+      z-index: 5;
+    }
+    .swatch-btn.active {
+      transform: scale(1.26);
+      z-index: 10;
+      box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #0f172a;
+      border-color: transparent;
+    }
+    /* Canvas cursor & animation */
+    #artCanvas {
+      cursor: crosshair;
+      touch-action: none;
+    }
+    @keyframes scanline {
+      0% { top: 0%; opacity: 0.9; }
+      50% { top: 96%; opacity: 1; }
+      100% { top: 0%; opacity: 0.9; }
+    }
+    .ai-scanner-bar {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: linear-gradient(90deg, transparent, #3b82f6, #8b5cf6, #3b82f6, transparent);
+      box-shadow: 0 0 16px 4px rgba(59, 130, 246, 0.55);
+      animation: scanline 1.6s ease-in-out infinite;
+      pointer-events: none;
+    }
+    @keyframes popIn {
+      0% { transform: scale(0.82); opacity: 0; }
+      70% { transform: scale(1.04); opacity: 1; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .grade-badge-anim {
+      animation: popIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+  </style>
+</head>
+<body class="p-2 sm:p-4">
+
+  <!-- Top Utility Bar (Outside Phone Frame for Mode/Sound/Template Controls) -->
+  <div class="w-full max-w-[400px] mb-2 flex items-center justify-between px-2 text-xs text-slate-600">
+    <div class="flex items-center gap-1.5">
+      <span class="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>
+      <span class="font-semibold text-slate-700" id="statusText">點選色塊即可自動填色</span>
+    </div>
+    <div class="flex items-center gap-1.5">
+      <button id="btnToggleMinimal" type="button" class="px-2 py-1 rounded-md bg-white border border-slate-200 shadow-sm hover:bg-slate-50 font-medium text-slate-700 transition" title="切換純淨無按鈕預覽模式">
+        純淨模式: 關
+      </button>
+      <button id="btnSoundToggle" type="button" class="px-2 py-1 rounded-md bg-white border border-slate-200 shadow-sm hover:bg-slate-50 font-medium text-slate-700 transition" title="音效開關">
+        🔊 音效
+      </button>
+    </div>
+  </div>
+
+  <!-- iPhone 9:19.5 Vertical Game UI Container -->
+  <div class="iphone-shell" id="phoneShell">
+    <div class="iphone-notch"></div>
+
+    <!-- Top Header Area: Centered Camera-with-Plus Icon -->
+    <div class="relative pt-2 pb-1 px-4 flex items-center justify-between shrink-0 bg-white z-10">
+      <!-- Left: Undo / Clear (Hidden in Pure Minimal Mode) -->
+      <div id="leftControls" class="flex items-center gap-1 w-24">
+        <button id="btnUndo" type="button" class="p-1.5 rounded-full text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition disabled:opacity-30" title="復原上一步" disabled>
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
+          </svg>
+        </button>
+        <button id="btnReset" type="button" class="p-1.5 rounded-full text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition" title="清空重畫">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Center: Minimal Camera-with-Plus Icon for Photo Upload -->
+      <div class="flex flex-col items-center justify-center">
+        <button id="btnCameraUpload" type="button" class="group relative p-2 rounded-2xl text-slate-900 hover:bg-slate-100 active:scale-95 transition" title="上傳照片由 AI 擷取輪廓">
+          <svg class="w-8 h-8" viewBox="0 0 36 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 10C4 8.34315 5.34315 7 7 7H9.5L11.5 4H18.5L20.5 7H23C24.6569 7 26 8.34315 26 10V23C26 24.6569 24.6569 26 23 26H7C5.34315 26 4 24.6569 4 23V10Z" stroke="#111827" stroke-width="2.2" stroke-linejoin="round"/>
+            <circle cx="15" cy="16.5" r="5" stroke="#111827" stroke-width="2.2"/>
+            <circle cx="21.5" cy="11" r="1.2" fill="#111827"/>
+            <path d="M30 3V11M26 7H34" stroke="#111827" stroke-width="2.3" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <input id="photoInput" type="file" accept="image/*" class="hidden" />
+      </div>
+
+      <!-- Right: Submit for AI Score Button (Hidden in Pure Minimal Mode) -->
+      <div id="rightControls" class="flex items-center justify-end w-24">
+        <button id="btnSubmitScore" type="button" class="px-2.5 py-1 rounded-full bg-slate-900 text-white text-xs font-semibold shadow-sm hover:bg-slate-800 active:scale-95 transition flex items-center gap-1">
+          <span>提交評分</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Sub-toolbar: AI Contour Mode & Reference Photo Thumbnail (Hidden in Pure Minimal Mode) -->
+    <div id="subToolbar" class="px-3 py-1 flex items-center justify-between bg-slate-50/80 border-y border-slate-100 text-[11px] shrink-0">
+      <div class="flex items-center gap-1">
+        <button id="btnModeChibi" type="button" class="px-2 py-0.5 rounded-full bg-slate-900 text-white font-medium transition">
+          Q版角色輪廓
+        </button>
+        <button id="btnModePhotoEdge" type="button" class="px-2 py-0.5 rounded-full text-slate-600 hover:bg-slate-200 font-medium transition">
+          實景照片輪廓
+        </button>
+        <button id="btnNextPreset" type="button" class="px-2 py-0.5 rounded-full text-indigo-600 hover:bg-indigo-50 font-medium transition" title="切換預設Q版角色">
+          換角色 ↻
+        </button>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <span id="progressBadge" class="text-slate-500 font-medium">進度 0%</span>
+      </div>
+    </div>
+
+    <!-- Center Coloring Stage (Pure White Background, Centered Outline Art) -->
+    <div class="relative flex-1 bg-white flex items-center justify-center overflow-hidden px-3 py-1">
+      <div class="relative w-full h-full flex items-center justify-center">
+        <canvas id="artCanvas" width="720" height="840" class="max-w-full max-h-full object-contain"></canvas>
+
+        <!-- Uploaded Photo Mini Reference Preview (Top-Left Floating Pill when Photo Uploaded) -->
+        <div id="refPhotoCard" class="hidden absolute top-2 left-2 bg-white/95 backdrop-blur border border-slate-200 rounded-xl p-1 shadow-md flex items-center gap-1.5 z-10">
+          <img id="refPhotoImg" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="參考照片" class="w-10 h-10 rounded-lg object-cover border border-slate-100" />
+          <div class="pr-1">
+            <div class="text-[10px] font-bold text-slate-700 leading-tight">AI 參考原圖</div>
+            <button id="btnAdjustEdge" type="button" class="text-[10px] text-indigo-600 font-semibold hover:underline">調整輪廓精細度</button>
+          </div>
+        </div>
+
+        <!-- Edge Sensitivity Popover (When in Photo Edge Mode) -->
+        <div id="edgeControlPanel" class="hidden absolute top-14 left-2 right-2 bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl p-3 shadow-xl z-20">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-bold text-slate-800">AI 高清輪廓掃描引擎設定</span>
+            <button id="btnCloseEdgePanel" type="button" class="text-xs text-slate-400 hover:text-slate-700 font-bold px-1">✕</button>
+          </div>
+          <div class="space-y-2 text-[11px]">
+            <div class="flex items-center justify-between gap-1 bg-slate-100 p-1 rounded-lg">
+              <button id="btnScanHybrid" type="button" class="flex-1 py-1 rounded-md bg-slate-900 text-white font-semibold text-[10px] transition">高清混合線稿</button>
+              <button id="btnScanInk" type="button" class="flex-1 py-1 rounded-md text-slate-600 hover:bg-slate-200 font-semibold text-[10px] transition">純淨漫畫線</button>
+              <button id="btnScanBlock" type="button" class="flex-1 py-1 rounded-md text-slate-600 hover:bg-slate-200 font-semibold text-[10px] transition">智慧色塊分割</button>
+            </div>
+            <div class="flex items-center justify-between gap-2">
+              <label for="sliderDetail" class="text-slate-600 shrink-0 w-20">輪廓敏銳度</label>
+              <input id="sliderDetail" type="range" min="1" max="5" step="1" value="3" class="w-full accent-slate-900" />
+              <span id="valDetail" class="w-6 text-right font-semibold text-slate-700">3</span>
+            </div>
+            <div class="flex items-center justify-between gap-2">
+              <label for="sliderLineWeight" class="text-slate-600 shrink-0 w-20">黑線粗細</label>
+              <input id="sliderLineWeight" type="range" min="1" max="4" step="1" value="2" class="w-full accent-slate-900" />
+              <span id="valLineWeight" class="w-6 text-right font-semibold text-slate-700">2</span>
+            </div>
+            <div class="flex items-center justify-between gap-2">
+              <label for="sliderDenoise" class="text-slate-600 shrink-0 w-20">雜訊平滑度</label>
+              <input id="sliderDenoise" type="range" min="1" max="5" step="1" value="3" class="w-full accent-slate-900" />
+              <span id="valDenoise" class="w-6 text-right font-semibold text-slate-700">3</span>
+            </div>
+            <div class="pt-1 border-t border-slate-100 flex items-center justify-between">
+              <label class="flex items-center gap-1.5 text-slate-700 font-medium cursor-pointer">
+                <input id="chkGhostOverlay" type="checkbox" class="rounded accent-slate-900" />
+                <span>半透明疊加原圖對照</span>
+              </label>
+              <button id="btnRescanNow" type="button" class="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-bold hover:bg-indigo-100">重新掃描</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- AI Scanning Overlay -->
+        <div id="aiScanOverlay" class="hidden absolute inset-0 bg-white/85 backdrop-blur-sm flex flex-col items-center justify-center z-30">
+          <div class="ai-scanner-bar"></div>
+          <div class="w-12 h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center shadow-lg mb-3 animate-bounce">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+            </svg>
+          </div>
+          <p class="text-sm font-bold text-slate-800" id="aiScanTitle">AI 正在擷取照片輪廓...</p>
+          <p class="text-xs text-slate-500 mt-1">自動分割封閉色塊與分析參考色彩</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Color & Quick Action Strip (Hidden in Pure Minimal Mode) -->
+    <div id="colorStatusStrip" class="px-3 py-1 bg-white flex items-center justify-between border-t border-slate-100 text-[11px] shrink-0">
+      <div class="flex items-center gap-2">
+        <span id="currentColorDot" class="w-4 h-4 rounded-full border border-slate-300 shadow-inner inline-block" style="background-color: #FF6B6B;"></span>
+        <span id="currentColorName" class="font-semibold text-slate-700">#FF6B6B 珊瑚紅</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="btnAutoHint" type="button" class="text-indigo-600 hover:text-indigo-800 font-semibold transition">
+          ✨ AI 智慧填色提示
+        </button>
+      </div>
+    </div>
+
+    <!-- Bottom Thin Horizontal 56-Color Palette Strip in Neat Rows -->
+    <div class="shrink-0 bg-white pb-4 pt-0.5 px-1">
+      <div id="paletteGrid" class="palette-grid"></div>
+    </div>
+
+    <!-- AI Score Evaluation Modal (D to A++) -->
+    <div id="scoreModal" class="hidden absolute inset-0 bg-slate-900/60 backdrop-blur-sm z-40 flex items-center justify-center p-4">
+      <div class="bg-white w-full rounded-3xl p-5 shadow-2xl border border-slate-100 flex flex-col max-h-[92%] overflow-y-auto">
+        <div class="text-center">
+          <span class="px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 text-[11px] font-bold tracking-wide">AI 藝術評鑑報告</span>
+          <h2 class="text-base font-extrabold text-slate-800 mt-1">作品色彩與完成度評分</h2>
+        </div>
+
+        <!-- Grade Badge (D to A++) -->
+        <div class="my-3 flex flex-col items-center justify-center">
+          <div id="gradeBadge" class="grade-badge-anim w-24 h-24 rounded-3xl bg-gradient-to-br from-amber-400 via-orange-500 to-rose-500 text-white flex flex-col items-center justify-center shadow-xl">
+            <span class="text-[10px] font-bold uppercase tracking-widest opacity-90">GRADE</span>
+            <span id="gradeLetter" class="text-4xl font-black leading-none mt-0.5">A++</span>
+          </div>
+          <div class="mt-2 text-center">
+            <div id="gradeTitle" class="text-sm font-extrabold text-slate-800">神級配色大師！</div>
+            <div id="gradeTotalScore" class="text-xs text-slate-500 font-medium">綜合得分：98 / 100</div>
+          </div>
+        </div>
+
+        <!-- Detailed Metric Bars -->
+        <div class="space-y-2.5 bg-slate-50 p-3.5 rounded-2xl border border-slate-100 text-xs">
+          <div>
+            <div class="flex justify-between font-semibold text-slate-700 mb-1">
+              <span>1. 區塊填色完成度</span>
+              <span id="metricCompletionVal">100%</span>
+            </div>
+            <div class="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+              <div id="metricCompletionBar" class="h-full bg-emerald-500 rounded-full transition-all duration-500" style="width: 100%"></div>
+            </div>
+          </div>
+
+          <div>
+            <div class="flex justify-between font-semibold text-slate-700 mb-1">
+              <span>2. 色彩和諧與原圖契合度</span>
+              <span id="metricHarmonyVal">95%</span>
+            </div>
+            <div class="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+              <div id="metricHarmonyBar" class="h-full bg-indigo-500 rounded-full transition-all duration-500" style="width: 95%"></div>
+            </div>
+          </div>
+
+          <div>
+            <div class="flex justify-between font-semibold text-slate-700 mb-1">
+              <span>3. 相鄰色塊層次對比</span>
+              <span id="metricContrastVal">92%</span>
+            </div>
+            <div class="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+              <div id="metricContrastBar" class="h-full bg-amber-500 rounded-full transition-all duration-500" style="width: 92%"></div>
+            </div>
+          </div>
+
+          <div>
+            <div class="flex justify-between font-semibold text-slate-700 mb-1">
+              <span>4. 五官與細節精緻度</span>
+              <span id="metricDetailVal">96%</span>
+            </div>
+            <div class="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+              <div id="metricDetailBar" class="h-full bg-rose-500 rounded-full transition-all duration-500" style="width: 96%"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- AI Comment Box -->
+        <div class="mt-3 p-3 rounded-2xl bg-indigo-50/70 border border-indigo-100 text-xs text-slate-700 leading-relaxed" id="aiFeedbackText">
+          每個區塊都填塗得非常完整！五官與服裝的冷暖色調搭配十分協調，完美突顯了 Q 版角色的立體感。
+        </div>
+
+        <!-- Modify vs Confirm Submit Action Buttons -->
+        <div class="mt-4 grid grid-cols-2 gap-2.5">
+          <button id="btnBackToModify" type="button" class="py-2.5 px-3 rounded-xl border-2 border-slate-900 text-slate-900 font-bold text-xs hover:bg-slate-100 active:scale-95 transition">
+            ✎ 返回修改色塊
+          </button>
+          <button id="btnDownloadArt" type="button" class="py-2.5 px-3 rounded-xl bg-slate-900 text-white font-bold text-xs hover:bg-slate-800 active:scale-95 transition shadow-md">
+            ⬇ 儲存完成作品
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ==========================================
+    // 1. 56-Color Curated Palette (4 rows x 14)
+    // ==========================================
+    const PALETTE_56 = [
+      // Row 1: Grayscale, Skin Tones, Warm Reds & Oranges, Yellows, Greens
+      { hex: '#FFFFFF', name: '純淨白' },
+      { hex: '#111827', name: '曜石黑' },
+      { hex: '#6B7280', name: '水泥灰' },
+      { hex: '#D1D5DB', name: '銀霧灰' },
+      { hex: '#FFF3E0', name: '白皙膚' },
+      { hex: '#FFE0BD', name: '粉嫩膚' },
+      { hex: '#F5CBA7', name: '自然膚' },
+      { hex: '#E0AC69', name: '陽光膚' },
+      { hex: '#FF4D4F', name: '鮮緋紅' },
+      { hex: '#FF7875', name: '珊瑚紅' },
+      { hex: '#FF7A45', name: '夕陽橘' },
+      { hex: '#FFA940', name: '蜜柑橘' },
+      { hex: '#FADB14', name: '檸檬黃' },
+      { hex: '#A0D911', name: '嫩芽綠' },
+
+      // Row 2: Forest Greens, Teals, Cyans, Sky Blues, Royal Blues, Purples
+      { hex: '#237804', name: '森林綠' },
+      { hex: '#52C41A', name: '翡翠綠' },
+      { hex: '#73D13D', name: '青蘋綠' },
+      { hex: '#95DE64', name: '薄荷綠' },
+      { hex: '#13C2C2', name: '松石綠' },
+      { hex: '#36CFC9', name: '湖水綠' },
+      { hex: '#5CDBD3', name: '蒂芬妮藍' },
+      { hex: '#69C0FF', name: '晴空藍' },
+      { hex: '#40A9FF', name: '海島藍' },
+      { hex: '#1890FF', name: '寶石藍' },
+      { hex: '#096DD9', name: '深海藍' },
+      { hex: '#003A8C', name: '午夜藍' },
+      { hex: '#D3ADF7', name: '薰衣草紫' },
+      { hex: '#722ED1', name: '皇家紫' },
+
+      // Row 3: Pastels, Pinks, Magentas, Berry Tones, Browns, Earth Tones
+      { hex: '#F9F0FF', name: '極光白紫' },
+      { hex: '#EFDBFF', name: '丁香紫' },
+      { hex: '#B37FEB', name: '紫羅蘭' },
+      { hex: '#9254DE', name: '鳶尾紫' },
+      { hex: '#FFF0F6', name: '櫻花粉白' },
+      { hex: '#FFD6E7', name: '蜜桃粉' },
+      { hex: '#FFADD2', name: '芭比粉' },
+      { hex: '#FF85C0', name: '甜心粉' },
+      { hex: '#F759AB', name: '玫瑰桃' },
+      { hex: '#EB2F96', name: '火龍果紅' },
+      { hex: '#C41D7F', name: '梅果紫紅' },
+      { hex: '#9E1068', name: '勃根地紅' },
+      { hex: '#873800', name: '紅木棕' },
+      { hex: '#5C2200', name: '深焙咖啡' },
+
+      // Row 4: Hair & Fashion Tones, Cream, Gold, Mocha, Slate, Pastel Accents
+      { hex: '#D4B196', name: '奶茶棕' },
+      { hex: '#A87B51', name: '焦糖棕' },
+      { hex: '#7C4D2B', name: '栗子棕' },
+      { hex: '#4A2C18', name: '黑巧克棕' },
+      { hex: '#FFFBE6', name: '奶油白' },
+      { hex: '#FFE58F', name: '香檳金' },
+      { hex: '#FFD666', name: '向日葵黃' },
+      { hex: '#FFC53D', name: '琥珀金' },
+      { hex: '#BAE7FF', name: '冰川藍' },
+      { hex: '#B5F5EC', name: '蘇打綠' },
+      { hex: '#D9F7BE', name: '抹茶奶綠' },
+      { hex: '#FFCCC7', name: '腮紅粉' },
+      { hex: '#334155', name: '丹寧藍灰' },
+      { hex: '#1E293B', name: '石墨深灰' }
+    ];
+
+    // ==========================================
+    // 2. Application State
+    // ==========================================
+    const state = {
+      selectedColorIdx: 9, // Default #FF7875
+      soundEnabled: true,
+      minimalMode: false,
+      mode: 'chibi', // 'chibi' | 'photo_edge'
+      presetIndex: 0,
+      hasUploadedPhoto: false,
+      uploadedImage: null,
+      uploadedPalette: null,
+      edgeDetail: 3,
+      edgeLineWeight: 2,
+      edgeDenoise: 3,
+      scanMethod: 'hybrid', // 'hybrid' | 'ink' | 'block'
+      ghostOverlay: false,
+      // Region segmentation buffers (width: 720, height: 840)
+      width: 720,
+      height: 840,
+      regionMap: null,       // Int32Array of size width*height (-1 = outline, 0 = background, >=1 = regionId)
+      outlineMask: null,     // Uint8Array (0 = fillable, 1..255 = black line darkness)
+      regions: [],           // Array of { id, pixelCount, currentColor, targetColor, isDetail, bbox, centerX, centerY }
+      undoStack: []          // Array of snapshots of region colors
+    };
+
+    const canvas = document.getElementById('artCanvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    // ==========================================
+    // 3. Web Audio Synthesizer for Tactile Feedback
+    // ==========================================
+    let audioCtx = null;
+    function playTone(type) {
+      if (!state.soundEnabled) return;
+      try {
+        if (!audioCtx) {
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          audioCtx = new AudioContextClass();
+        }
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        if (type === 'fill') {
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(420, now);
+          osc.frequency.exponentialRampToValueAtTime(680, now + 0.08);
+          gain.gain.setValueAtTime(0.14, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+          osc.start(now);
+          osc.stop(now + 0.09);
+        } else if (type === 'swatch') {
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(520, now);
+          gain.gain.setValueAtTime(0.07, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+          osc.start(now);
+          osc.stop(now + 0.04);
+        } else if (type === 'complete') {
+          const notes = [523.25, 659.25, 783.99, 1046.5];
+          notes.forEach((freq, idx) => {
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.connect(g);
+            g.connect(audioCtx.destination);
+            o.type = 'triangle';
+            o.frequency.setValueAtTime(freq, now + idx * 0.08);
+            g.gain.setValueAtTime(0.12, now + idx * 0.08);
+            g.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.08 + 0.25);
+            o.start(now + idx * 0.08);
+            o.stop(now + idx * 0.08 + 0.25);
+          });
+        }
+      } catch (e) {
+        // Ignore audio restrictions
+      }
+    }
+
+    // ==========================================
+    // 4. Color Helpers
+    // ==========================================
+    function hexToRgb(hex) {
+      const clean = hex.replace('#', '');
+      const num = parseInt(clean, 16);
+      return {
+        r: (num >> 16) & 255,
+        g: (num >> 8) & 255,
+        b: num & 255
+      };
+    }
+
+    function rgbToHex(r, g, b) {
+      const toHex = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
+      return ('#' + toHex(r) + toHex(g) + toHex(b)).toUpperCase();
+    }
+
+    function colorDistance(hex1, hex2) {
+      if (!hex1 || !hex2) return 255;
+      const c1 = hexToRgb(hex1);
+      const c2 = hexToRgb(hex2);
+      // Weighted perceptual Euclidean distance
+      const rmean = (c1.r + c2.r) / 2;
+      const dr = c1.r - c2.r;
+      const dg = c1.g - c2.g;
+      const db = c1.b - c2.b;
+      return Math.sqrt((((512 + rmean) * dr * dr) >> 8) + 4 * dg * dg + (((767 - rmean) * db * db) >> 8));
+    }
+
+    function findClosestPaletteColor(r, g, b) {
+      const targetHex = rgbToHex(r, g, b);
+      let bestHex = PALETTE_56[5].hex;
+      let minDist = Infinity;
+      for (let i = 1; i < PALETTE_56.length; i++) {
+        const d = colorDistance(targetHex, PALETTE_56[i].hex);
+        if (d < minDist) {
+          minDist = d;
+          bestHex = PALETTE_56[i].hex;
+        }
+      }
+      return bestHex;
+    }
+
+    // ==========================================
+    // 5. Render 56-Color Palette Strip
+    // ==========================================
+    function initPaletteUI() {
+      const grid = document.getElementById('paletteGrid');
+      grid.innerHTML = '';
+      PALETTE_56.forEach((item, index) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'swatch-btn' + (index === state.selectedColorIdx ? ' active' : '');
+        btn.style.backgroundColor = item.hex;
+        btn.title = `${item.name} (${item.hex})`;
+        btn.addEventListener('click', () => {
+          selectColor(index);
+          playTone('swatch');
+        });
+        grid.appendChild(btn);
+      });
+      updateActiveColorBanner();
+    }
+
+    function selectColor(index) {
+      state.selectedColorIdx = index;
+      const buttons = document.querySelectorAll('#paletteGrid .swatch-btn');
+      buttons.forEach((b, idx) => {
+        b.classList.toggle('active', idx === index);
+      });
+      updateActiveColorBanner();
+    }
+
+    function updateActiveColorBanner() {
+      const item = PALETTE_56[state.selectedColorIdx];
+      document.getElementById('currentColorDot').style.backgroundColor = item.hex;
+      document.getElementById('currentColorName').textContent = `${item.hex} ${item.name}`;
+    }
+
+    // ==========================================
+    // 6. Q-Version Chibi Line Art Generator (Clean Thick Black Outlines)
+    // ==========================================
+    function drawChibiOutlineToOffscreen(presetIdx) {
+      const off = document.createElement('canvas');
+      off.width = state.width;
+      off.height = state.height;
+      const octx = off.getContext('2d');
+
+      octx.fillStyle = '#FFFFFF';
+      octx.fillRect(0, 0, off.width, off.height);
+
+      octx.strokeStyle = '#000000';
+      octx.lineCap = 'round';
+      octx.lineJoin = 'round';
+
+      const cx = off.width / 2;
+      const cy = 410;
+
+      // Helper to fill white and stroke thick black
+      function fillAndStroke(lineWidth = 11) {
+        octx.fillStyle = '#FFFFFF';
+        octx.fill();
+        octx.lineWidth = lineWidth;
+        octx.strokeStyle = '#000000';
+        octx.stroke();
+      }
+
+      // 1. Back Hair Silhouette (Creates distinct colorable hair regions)
+      octx.beginPath();
+      if (presetIdx % 3 === 0) {
+        // Fluffy bob hair with side tufts (matches Turn 1 mockup)
+        octx.moveTo(cx - 170, cy - 80);
+        octx.bezierCurveTo(cx - 210, cy - 260, cx - 80, cy - 330, cx, cy - 325);
+        octx.bezierCurveTo(cx + 80, cy - 330, cx + 210, cy - 260, cx + 170, cy - 80);
+        // Right outer tuft
+        octx.bezierCurveTo(cx + 195, cy - 45, cx + 215, cy - 20, cx + 175, cy + 5);
+        octx.bezierCurveTo(cx + 190, cy + 45, cx + 165, cy + 75, cx + 125, cy + 70);
+        // Bottom hair curve
+        octx.lineTo(cx - 125, cy + 70);
+        // Left outer tuft
+        octx.bezierCurveTo(cx - 165, cy + 75, cx - 190, cy + 45, cx - 175, cy + 5);
+        octx.bezierCurveTo(cx - 215, cy - 20, cx - 195, cy - 45, cx - 170, cy - 80);
+      } else if (presetIdx % 3 === 1) {
+        // Twin-tails Q-Chibi
+        // Left twin tail
+        octx.moveTo(cx - 140, cy - 120);
+        octx.bezierCurveTo(cx - 260, cy - 110, cx - 270, cy + 60, cx - 195, cy + 120);
+        octx.bezierCurveTo(cx - 145, cy + 110, cx - 135, cy + 30, cx - 130, cy - 50);
+        octx.closePath();
+        fillAndStroke(11);
+
+        // Right twin tail
+        octx.beginPath();
+        octx.moveTo(cx + 140, cy - 120);
+        octx.bezierCurveTo(cx + 260, cy - 110, cx + 270, cy + 60, cx + 195, cy + 120);
+        octx.bezierCurveTo(cx + 145, cy + 110, cx + 135, cy + 30, cx + 130, cy - 50);
+        octx.closePath();
+        fillAndStroke(11);
+
+        // Main dome hair
+        octx.beginPath();
+        octx.arc(cx, cy - 125, 185, Math.PI * 0.88, Math.PI * 0.12, false);
+        octx.closePath();
+      } else {
+        // Cute Cat-Ear Hood / Cap Chibi
+        octx.moveTo(cx - 175, cy - 90);
+        // Left cat ear
+        octx.lineTo(cx - 165, cy - 290);
+        octx.lineTo(cx - 75, cy - 245);
+        octx.quadraticCurveTo(cx, cy - 265, cx + 75, cy - 245);
+        // Right cat ear
+        octx.lineTo(cx + 165, cy - 290);
+        octx.lineTo(cx + 175, cy - 90);
+        octx.bezierCurveTo(cx + 195, cy + 20, cx + 150, cy + 75, cx + 110, cy + 75);
+        octx.lineTo(cx - 110, cy + 75);
+        octx.bezierCurveTo(cx - 150, cy + 75, cx - 195, cy + 20, cx - 175, cy - 90);
+      }
+      octx.closePath();
+      fillAndStroke(12);
+
+      // 2. Chibi Body & Limbs (Rounded Onesie / Outfit with Belly Patch)
+      // Left & Right Arms + Torso + Legs
+      octx.beginPath();
+      octx.moveTo(cx - 58, cy + 62);
+      // Left arm out
+      octx.bezierCurveTo(cx - 115, cy + 95, cx - 155, cy + 155, cx - 165, cy + 185);
+      octx.bezierCurveTo(cx - 175, cy + 208, cx - 140, cy + 228, cx - 120, cy + 205);
+      octx.bezierCurveTo(cx - 102, cy + 185, cx - 90, cy + 165, cx - 80, cy + 150);
+      // Left hip & leg
+      octx.bezierCurveTo(cx - 96, cy + 225, cx - 85, cy + 310, cx - 62, cy + 345);
+      octx.bezierCurveTo(cx - 42, cy + 358, cx - 12, cy + 355, cx - 10, cy + 332);
+      octx.lineTo(cx - 8, cy + 285);
+      octx.lineTo(cx + 8, cy + 285);
+      octx.lineTo(cx + 10, cy + 332);
+      // Right leg
+      octx.bezierCurveTo(cx + 12, cy + 355, cx + 42, cy + 358, cx + 62, cy + 345);
+      octx.bezierCurveTo(cx + 85, cy + 310, cx + 96, cy + 225, cx + 80, cy + 150);
+      // Right arm
+      octx.bezierCurveTo(cx + 90, cy + 165, cx + 102, cy + 185, cx + 120, cy + 205);
+      octx.bezierCurveTo(cx + 140, cy + 228, cx + 175, cy + 208, cx + 165, cy + 185);
+      octx.bezierCurveTo(cx + 155, cy + 155, cx + 115, cy + 95, cx + 58, cy + 62);
+      octx.closePath();
+      fillAndStroke(12);
+
+      // Outfit Collar / Scarf Detail (creates extra fun regions)
+      octx.beginPath();
+      octx.moveTo(cx - 65, cy + 66);
+      octx.quadraticCurveTo(cx, cy + 108, cx + 65, cy + 66);
+      octx.quadraticCurveTo(cx + 45, cy + 118, cx, cy + 120);
+      octx.quadraticCurveTo(cx - 45, cy + 118, cx - 65, cy + 66);
+      octx.closePath();
+      fillAndStroke(9);
+
+      // Center Belly / Outfit Emblem Region (Matches Turn 1 oval patch or star/heart)
+      octx.beginPath();
+      if (presetIdx % 3 === 0) {
+        octx.ellipse(cx, cy + 195, 56, 72, 0, 0, Math.PI * 2);
+      } else if (presetIdx % 3 === 1) {
+        // Heart emblem on dress/shirt
+        octx.moveTo(cx, cy + 245);
+        octx.bezierCurveTo(cx - 65, cy + 205, cx - 65, cy + 135, cx, cy + 168);
+        octx.bezierCurveTo(cx + 65, cy + 135, cx + 65, cy + 205, cx, cy + 245);
+      } else {
+        // Pocket + Stripe
+        octx.arc(cx, cy + 190, 58, 0, Math.PI * 2);
+      }
+      octx.closePath();
+      fillAndStroke(8);
+
+      // Shoes / Socks line separator on legs so shoes can be colored separately
+      octx.beginPath();
+      octx.moveTo(cx - 82, cy + 305);
+      octx.quadraticCurveTo(cx - 45, cy + 318, cx - 10, cy + 305);
+      octx.moveTo(cx + 10, cy + 305);
+      octx.quadraticCurveTo(cx + 45, cy + 318, cx + 82, cy + 305);
+      octx.lineWidth = 8;
+      octx.stroke();
+
+      // Cuffs on sleeves so hands can be colored skin tone
+      octx.beginPath();
+      octx.moveTo(cx - 152, cy + 162);
+      octx.lineTo(cx - 110, cy + 190);
+      octx.moveTo(cx + 152, cy + 162);
+      octx.lineTo(cx + 110, cy + 190);
+      octx.lineWidth = 8;
+      octx.stroke();
+
+      // 3. Left & Right Ears
+      octx.beginPath();
+      octx.arc(cx - 145, cy - 35, 36, 0, Math.PI * 2);
+      fillAndStroke(11);
+      octx.beginPath();
+      octx.arc(cx + 145, cy - 35, 36, 0, Math.PI * 2);
+      fillAndStroke(11);
+
+      // 4. Head / Face Contour
+      octx.beginPath();
+      octx.moveTo(cx - 142, cy - 85);
+      octx.bezierCurveTo(cx - 150, cy + 35, cx - 95, cy + 78, cx, cy + 78);
+      octx.bezierCurveTo(cx + 95, cy + 78, cx + 150, cy + 35, cx + 142, cy - 85);
+      octx.bezierCurveTo(cx + 135, cy - 195, cx - 135, cy - 195, cx - 142, cy - 85);
+      octx.closePath();
+      fillAndStroke(11);
+
+      // 5. Front Hair Bangs (Closed region overlapping top of head)
+      octx.beginPath();
+      octx.moveTo(cx - 148, cy - 65);
+      octx.bezierCurveTo(cx - 155, cy - 185, cx - 85, cy - 245, cx, cy - 245);
+      octx.bezierCurveTo(cx + 85, cy - 245, cx + 155, cy - 185, cx + 148, cy - 65);
+      // Bang locks across forehead
+      octx.bezierCurveTo(cx + 120, cy - 95, cx + 95, cy - 125, cx + 72, cy - 145);
+      octx.bezierCurveTo(cx + 68, cy - 95, cx + 48, cy - 65, cx + 22, cy - 55);
+      octx.bezierCurveTo(cx + 18, cy - 90, cx + 5, cy - 115, cx - 5, cy - 125);
+      octx.bezierCurveTo(cx - 15, cy - 80, cx - 42, cy - 60, cx - 68, cy - 85);
+      octx.bezierCurveTo(cx - 72, cy - 115, cx - 80, cy - 135, cx - 90, cy - 145);
+      octx.bezierCurveTo(cx - 110, cy - 110, cx - 128, cy - 85, cx - 148, cy - 65);
+      octx.closePath();
+      fillAndStroke(11);
+
+      // Optional Hair Accessories for Preset 1 & 2
+      if (presetIdx % 3 === 1) {
+        // Left & Right Hair Ribbons
+        octx.beginPath();
+        octx.arc(cx - 142, cy - 125, 24, 0, Math.PI * 2);
+        fillAndStroke(9);
+        octx.beginPath();
+        octx.arc(cx + 142, cy - 125, 24, 0, Math.PI * 2);
+        fillAndStroke(9);
+      }
+
+      // 6. High-Detail Cute Chibi Eyes (Closed Iris + Highlight Regions)
+      [-66, 66].forEach((offsetX) => {
+        const ex = cx + offsetX;
+        const ey = cy - 22;
+
+        // Upper eyelash arch
+        octx.beginPath();
+        octx.arc(ex, ey, 36, 0, Math.PI * 2);
+        fillAndStroke(10);
+
+        // Inner Iris ring (colorable!)
+        octx.beginPath();
+        octx.arc(ex, ey + 3, 24, 0, Math.PI * 2);
+        fillAndStroke(6);
+
+        // Top shine highlight bubble (stays white or colorable)
+        octx.beginPath();
+        octx.arc(ex - 8, ey - 8, 9, 0, Math.PI * 2);
+        fillAndStroke(5);
+
+        // Eyebrow
+        octx.beginPath();
+        octx.arc(ex, ey - 42, 22, Math.PI * 1.15, Math.PI * 1.85);
+        octx.lineWidth = 7;
+        octx.stroke();
+      });
+
+      // 7. Cute Blush Ovals (Colorable Cheek Regions)
+      octx.beginPath();
+      octx.ellipse(cx - 86, cy + 26, 20, 11, 0, 0, Math.PI * 2);
+      fillAndStroke(6);
+
+      octx.beginPath();
+      octx.ellipse(cx + 86, cy + 26, 20, 11, 0, 0, Math.PI * 2);
+      fillAndStroke(6);
+
+      // 8. Cute Nose & Cat-Smile Mouth (:3)
+      octx.beginPath();
+      octx.arc(cx, cy + 6, 3.5, 0, Math.PI * 2);
+      octx.fillStyle = '#000000';
+      octx.fill();
+
+      octx.beginPath();
+      octx.moveTo(cx - 20, cy + 22);
+      octx.quadraticCurveTo(cx - 10, cy + 34, cx, cy + 22);
+      octx.quadraticCurveTo(cx + 10, cy + 34, cx + 20, cy + 22);
+      octx.lineWidth = 7;
+      octx.strokeStyle = '#000000';
+      octx.stroke();
+
+      return off;
+    }
+
+    // ==========================================
+    // 7. AI Photo Contour & Palette Extraction Engine
+    // ==========================================
+    function extractPhotoPalette(img) {
+      const sampleCanvas = document.createElement('canvas');
+      sampleCanvas.width = 120;
+      sampleCanvas.height = 140;
+      const sctx = sampleCanvas.getContext('2d');
+      sctx.drawImage(img, 0, 0, 120, 140);
+      const data = sctx.getImageData(0, 0, 120, 140).data;
+
+      // Sample top (hair/head), center (face/skin), bottom (outfit)
+      function avgRegion(x0, y0, w, h) {
+        let r = 0, g = 0, b = 0, count = 0;
+        for (let y = y0; y < y0 + h; y++) {
+          for (let x = x0; x < x0 + w; x++) {
+            const idx = (y * 120 + x) * 4;
+            r += data[idx];
+            g += data[idx + 1];
+            b += data[idx + 2];
+            count++;
+          }
+        }
+        return count ? findClosestPaletteColor(r / count, g / count, b / count) : '#FFE0BD';
+      }
+
+      return {
+        hair: avgRegion(35, 10, 50, 30),
+        skin: avgRegion(40, 42, 40, 35),
+        outfit: avgRegion(30, 85, 60, 45),
+        accent: avgRegion(45, 95, 30, 25),
+        fullImageCanvas: (() => {
+          const fc = document.createElement('canvas');
+          fc.width = state.width;
+          fc.height = state.height;
+          const fctx = fc.getContext('2d');
+          fctx.fillStyle = '#FFFFFF';
+          fctx.fillRect(0, 0, fc.width, fc.height);
+          const scale = Math.min((fc.width - 60) / img.width, (fc.height - 60) / img.height);
+          const dw = img.width * scale;
+          const dh = img.height * scale;
+          fctx.drawImage(img, (fc.width - dw) / 2, (fc.height - dh) / 2, dw, dh);
+          return fc;
+        })()
+      };
+    }
+
+    function generatePhotoContourCanvas(img, detailLevel, lineWeight) {
+      const w = state.width;
+      const h = state.height;
+      const off = document.createElement('canvas');
+      off.width = w;
+      off.height = h;
+      const octx = off.getContext('2d');
+
+      // 1. Draw image at FULL native resolution (720x840) for razor-sharp contours
+      octx.fillStyle = '#FFFFFF';
+      octx.fillRect(0, 0, w, h);
+
+      const pad = 36;
+      const scale = Math.min((w - pad * 2) / img.width, (h - pad * 2) / img.height);
+      const dw = Math.round(img.width * scale);
+      const dh = Math.round(img.height * scale);
+      const dx = Math.round((w - dw) / 2);
+      const dy = Math.round((h - dh) / 2);
+      octx.drawImage(img, dx, dy, dw, dh);
+
+      const srcData = octx.getImageData(0, 0, w, h).data;
+      const totalPx = w * h;
+
+      // Extract Luminance and Chrominance channels
+      const lum = new Float32Array(totalPx);
+      const rCh = new Float32Array(totalPx);
+      const gCh = new Float32Array(totalPx);
+      const bCh = new Float32Array(totalPx);
+
+      for (let i = 0; i < totalPx; i++) {
+        const p = i * 4;
+        const r = srcData[p], g = srcData[p + 1], b = srcData[p + 2];
+        rCh[i] = r; gCh[i] = g; bCh[i] = b;
+        lum[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+      }
+
+      // 2. Fast Edge-Preserving Bilateral Filter (smooths skin/background noise while keeping edges sharp!)
+      const denoisePasses = state.edgeDenoise || 3;
+      const rangeSigmaSq2 = 2 * Math.pow(18 + denoisePasses * 6, 2);
+      let smoothLum = lum;
+      let smoothR = rCh, smoothG = gCh, smoothB = bCh;
+
+      for (let pass = 0; pass < Math.min(3, denoisePasses); pass++) {
+        const nextL = new Float32Array(totalPx);
+        const nextR = new Float32Array(totalPx);
+        const nextG = new Float32Array(totalPx);
+        const nextB = new Float32Array(totalPx);
+
+        for (let y = dy + 2; y < dy + dh - 2; y++) {
+          for (let x = dx + 2; x < dx + dw - 2; x++) {
+            const idx = y * w + x;
+            const cL = smoothLum[idx];
+            let wSum = 1.0;
+            let lSum = cL, rSum = smoothR[idx], gSum = smoothG[idx], bSum = smoothB[idx];
+
+            // 5-tap cross + diagonal bilateral kernel
+            const offsets = [-w - 1, -w, -w + 1, -1, 1, w - 1, w, w + 1, -2 * w, 2 * w, -2, 2];
+            for (let k = 0; k < offsets.length; k++) {
+              const nIdx = idx + offsets[k];
+              const diff = smoothLum[nIdx] - cL;
+              const wt = Math.exp(-(diff * diff) / rangeSigmaSq2);
+              wSum += wt;
+              lSum += smoothLum[nIdx] * wt;
+              rSum += smoothR[nIdx] * wt;
+              gSum += smoothG[nIdx] * wt;
+              bSum += smoothB[nIdx] * wt;
+            }
+            nextL[idx] = lSum / wSum;
+            nextR[idx] = rSum / wSum;
+            nextG[idx] = gSum / wSum;
+            nextB[idx] = bSum / wSum;
+          }
+        }
+        smoothLum = nextL;
+        smoothR = nextR; smoothG = nextG; smoothB = nextB;
+      }
+
+      // 3. Multi-Scale Difference of Gaussians (XDoG) + Color-Gradient Sobel Operator
+      // Compute small blur vs wide blur for XDoG adaptive local thresholding (captures fine eyes/mouth/hair lines!)
+      const blurSmall = new Float32Array(totalPx);
+      const blurWide = new Float32Array(totalPx);
+
+      for (let y = dy + 2; y < dy + dh - 2; y++) {
+        for (let x = dx + 2; x < dx + dw - 2; x++) {
+          const idx = y * w + x;
+          blurSmall[idx] = (
+            smoothLum[idx - w - 1] + 2 * smoothLum[idx - w] + smoothLum[idx - w + 1] +
+            2 * smoothLum[idx - 1] + 4 * smoothLum[idx] + 2 * smoothLum[idx + 1] +
+            smoothLum[idx + w - 1] + 2 * smoothLum[idx + w] + smoothLum[idx + w + 1]
+          ) * 0.0625;
+
+          // 5x5 wide average for local adaptive contrast
+          let sum5 = 0;
+          for (let ky = -2; ky <= 2; ky++) {
+            const row = (y + ky) * w + x;
+            sum5 += smoothLum[row - 2] + smoothLum[row - 1] + smoothLum[row] + smoothLum[row + 1] + smoothLum[row + 2];
+          }
+          blurWide[idx] = sum5 / 25.0;
+        }
+      }
+
+      // Compute Combined Color + Luminance Sobel Gradient Magnitude & Direction
+      const gradMag = new Float32Array(totalPx);
+      const gradDir = new Uint8Array(totalPx); // 0: horiz, 1: diag45, 2: vert, 3: diag135
+
+      for (let y = dy + 2; y < dy + dh - 2; y++) {
+        for (let x = dx + 2; x < dx + dw - 2; x++) {
+          const idx = y * w + x;
+
+          // Luminance Sobel
+          const gxL = (
+            -blurSmall[idx - w - 1] + blurSmall[idx - w + 1] -
+            2 * blurSmall[idx - 1] + 2 * blurSmall[idx + 1] -
+            blurSmall[idx + w - 1] + blurSmall[idx + w + 1]
+          );
+          const gyL = (
+            -blurSmall[idx - w - 1] - 2 * blurSmall[idx - w] - blurSmall[idx - w + 1] +
+            blurSmall[idx + w - 1] + 2 * blurSmall[idx + w] + blurSmall[idx + w + 1]
+          );
+
+          // Chrominance difference so isoluminant color boundaries (e.g. red shirt on blue bg) are detected!
+          const gxC = Math.abs(smoothR[idx + 1] - smoothR[idx - 1]) +
+                      Math.abs(smoothG[idx + 1] - smoothG[idx - 1]) +
+                      Math.abs(smoothB[idx + 1] - smoothB[idx - 1]);
+          const gyC = Math.abs(smoothR[idx + w] - smoothR[idx - w]) +
+                      Math.abs(smoothG[idx + w] - smoothG[idx - w]) +
+                      Math.abs(smoothB[idx + w] - smoothB[idx - w]);
+
+          const mag = Math.sqrt(gxL * gxL + gyL * gyL) + 0.45 * Math.sqrt(gxC * gxC + gyC * gyC);
+          gradMag[idx] = mag;
+
+          const angle = Math.atan2(gyL, gxL) * (180 / Math.PI);
+          const absAngle = angle < 0 ? angle + 180 : angle;
+          if (absAngle < 22.5 || absAngle >= 157.5) gradDir[idx] = 0;
+          else if (absAngle >= 22.5 && absAngle < 67.5) gradDir[idx] = 1;
+          else if (absAngle >= 67.5 && absAngle < 112.5) gradDir[idx] = 2;
+          else gradDir[idx] = 3;
+        }
+      }
+
+      // 4. Non-Maximum Suppression + Hysteresis + XDoG Dark Line Detection
+      const rawEdges = new Uint8Array(totalPx);
+      const highThresh = Math.max(18, 72 - detailLevel * 11);
+      const lowThresh = highThresh * 0.48;
+      const xdogThresh = Math.max(3.2, 9.5 - detailLevel * 1.3);
+
+      const scanMode = state.scanMethod || 'hybrid';
+
+      for (let y = dy + 3; y < dy + dh - 3; y++) {
+        for (let x = dx + 3; x < dx + dw - 3; x++) {
+          const idx = y * w + x;
+          const m = gradMag[idx];
+
+          // Canny NMS check
+          let n1 = 0, n2 = 0;
+          const dir = gradDir[idx];
+          if (dir === 0) { n1 = gradMag[idx - 1]; n2 = gradMag[idx + 1]; }
+          else if (dir === 1) { n1 = gradMag[idx - w + 1]; n2 = gradMag[idx + w - 1]; }
+          else if (dir === 2) { n1 = gradMag[idx - w]; n2 = gradMag[idx + w]; }
+          else { n1 = gradMag[idx - w - 1]; n2 = gradMag[idx + w + 1]; }
+
+          const isLocalMax = (m >= n1 * 0.92 && m >= n2 * 0.92);
+
+          // XDoG valley check (detects dark ink lines, eyelashes, pupils, mouth corners)
+          const dogDiff = blurWide[idx] - blurSmall[idx];
+          const isDarkFeature = (dogDiff > xdogThresh && blurSmall[idx] < 210);
+
+          if (scanMode === 'ink') {
+            if ((isLocalMax && m >= highThresh) || isDarkFeature) {
+              rawEdges[idx] = 2;
+            } else if (isLocalMax && m >= lowThresh) {
+              rawEdges[idx] = 1;
+            }
+          } else if (scanMode === 'block') {
+            // Color-Cluster Quantization Boundary (no gradient staircase: uses smoothed RGB + strong edges)
+            const qStep = Math.max(28, 68 - detailLevel * 8);
+            const cR = Math.round(smoothR[idx] / qStep);
+            const cG = Math.round(smoothG[idx] / qStep);
+            const cB = Math.round(smoothB[idx] / qStep);
+
+            const rR = Math.round(smoothR[idx + 1] / qStep);
+            const rG = Math.round(smoothG[idx + 1] / qStep);
+            const rB = Math.round(smoothB[idx + 1] / qStep);
+
+            const dR = Math.round(smoothR[idx + w] / qStep);
+            const dG = Math.round(smoothG[idx + w] / qStep);
+            const dB = Math.round(smoothB[idx + w] / qStep);
+
+            const colorJump = (cR !== rR || cG !== rG || cB !== rB || cR !== dR || cG !== dG || cB !== dB);
+            if ((colorJump && m > lowThresh * 0.65) || (isLocalMax && m >= highThresh)) {
+              rawEdges[idx] = 2;
+            }
+          } else {
+            // Hybrid Mode: Crisp XDoG + Canny + Significant Color-Cluster Transitions
+            if ((isLocalMax && m >= highThresh) || isDarkFeature) {
+              rawEdges[idx] = 2;
+            } else if (isLocalMax && m >= lowThresh) {
+              rawEdges[idx] = 1;
+            }
+          }
+        }
+      }
+
+      // 5. Hysteresis Edge Linking + Morphological Gap Closing (bridges 1-2px micro-gaps so regions seal!)
+      for (let pass = 0; pass < 2; pass++) {
+        for (let y = dy + 3; y < dy + dh - 3; y++) {
+          for (let x = dx + 3; x < dx + dw - 3; x++) {
+            const idx = y * w + x;
+            if (rawEdges[idx] === 1) {
+              if (
+                rawEdges[idx - w - 1] === 2 || rawEdges[idx - w] === 2 || rawEdges[idx - w + 1] === 2 ||
+                rawEdges[idx - 1] === 2 || rawEdges[idx + 1] === 2 ||
+                rawEdges[idx + w - 1] === 2 || rawEdges[idx + w] === 2 || rawEdges[idx + w + 1] === 2
+              ) {
+                rawEdges[idx] = 2;
+              }
+            }
+          }
+        }
+      }
+
+      // Remove isolated tiny 1-2px noise dots from rawEdges before thickening
+      const cleanEdges = new Uint8Array(totalPx);
+      for (let y = dy + 2; y < dy + dh - 2; y++) {
+        for (let x = dx + 2; x < dx + dw - 2; x++) {
+          const idx = y * w + x;
+          if (rawEdges[idx] === 2) {
+            let neighbors = 0;
+            for (let ky = -1; ky <= 1; ky++) {
+              for (let kx = -1; kx <= 1; kx++) {
+                if ((kx !== 0 || ky !== 0) && rawEdges[(y + ky) * w + (x + kx)] === 2) {
+                  neighbors++;
+                }
+              }
+            }
+            if (neighbors >= 1) cleanEdges[idx] = 1;
+          }
+        }
+      }
+
+      // Morphological Closing (1px dilation then 1px erosion of gaps) to seal hairline breaks along contours
+      const bridged = new Uint8Array(totalPx);
+      for (let y = dy + 2; y < dy + dh - 2; y++) {
+        for (let x = dx + 2; x < dx + dw - 2; x++) {
+          const idx = y * w + x;
+          if (cleanEdges[idx]) {
+            bridged[idx] = 1;
+          } else {
+            // Bridge horizontal, vertical, or diagonal 1-pixel gap
+            const hGap = cleanEdges[idx - 1] && cleanEdges[idx + 1];
+            const vGap = cleanEdges[idx - w] && cleanEdges[idx + w];
+            const d1Gap = cleanEdges[idx - w - 1] && cleanEdges[idx + w + 1];
+            const d2Gap = cleanEdges[idx - w + 1] && cleanEdges[idx + w - 1];
+            if (hGap || vGap || d1Gap || d2Gap) bridged[idx] = 1;
+          }
+        }
+      }
+
+      // Draw crisp outer frame around photo boundary so edge regions are 100% enclosed
+      for (let x = dx; x < dx + dw; x++) {
+        bridged[dy * w + x] = 1;
+        bridged[(dy + dh - 1) * w + x] = 1;
+      }
+      for (let y = dy; y < dy + dh; y++) {
+        bridged[y * w + dx] = 1;
+        bridged[y * w + dx + dw - 1] = 1;
+      }
+
+      // 6. Full-Resolution Circular Brush Stroking with Anti-Aliased Falloff
+      const radius = Math.max(1, lineWeight);
+      const outImg = octx.createImageData(w, h);
+      const outData = outImg.data;
+      outData.fill(255);
+
+      // Precompute circular brush offsets
+      const brushOffsets = [];
+      for (let ky = -radius - 1; ky <= radius + 1; ky++) {
+        for (let kx = -radius - 1; kx <= radius + 1; kx++) {
+          const dist = Math.sqrt(kx * kx + ky * ky);
+          if (dist <= radius + 0.65) {
+            const darkness = dist <= radius - 0.25 ? 255 : Math.round(255 * (1 - (dist - (radius - 0.25)) / 0.9));
+            brushOffsets.push({ offset: ky * w + kx, darkness });
+          }
+        }
+      }
+
+      const strokeDarkness = new Uint8Array(totalPx);
+      for (let y = radius + 2; y < h - radius - 2; y++) {
+        for (let x = radius + 2; x < w - radius - 2; x++) {
+          const idx = y * w + x;
+          if (bridged[idx]) {
+            for (let b = 0; b < brushOffsets.length; b++) {
+              const targetIdx = idx + brushOffsets[b].offset;
+              const d = brushOffsets[b].darkness;
+              if (d > strokeDarkness[targetIdx]) {
+                strokeDarkness[targetIdx] = d;
+              }
+            }
+          }
+        }
+      }
+
+      for (let i = 0; i < totalPx; i++) {
+        const v = 255 - strokeDarkness[i];
+        const p = i * 4;
+        outData[p] = v;
+        outData[p + 1] = v;
+        outData[p + 2] = v;
+        outData[p + 3] = 255;
+      }
+
+      octx.putImageData(outImg, 0, 0);
+      return off;
+    }
+
+    // ==========================================
+    // 8. Connected-Component Region Segmentation
+    // ==========================================
+    function buildRegionsFromOutlineCanvas(outlineCanvas) {
+      const w = state.width;
+      const h = state.height;
+      const octx = outlineCanvas.getContext('2d');
+      const imgData = octx.getImageData(0, 0, w, h).data;
+
+      const outlineMask = new Uint8Array(w * h);
+      const regionMap = new Int32Array(w * h);
+      regionMap.fill(-2); // -2 = unvisited
+
+      for (let i = 0; i < w * h; i++) {
+        const lum = imgData[i * 4]; // R channel (grayscale)
+        if (lum < 185) {
+          outlineMask[i] = 255 - lum;
+          regionMap[i] = -1; // -1 = black outline wall
+        }
+      }
+
+      // Reference image data if user uploaded a photo
+      let refData = null;
+      if (state.uploadedPalette && state.uploadedPalette.fullImageCanvas) {
+        refData = state.uploadedPalette.fullImageCanvas.getContext('2d').getImageData(0, 0, w, h).data;
+      }
+
+      const regions = [];
+      const queue = new Int32Array(w * h);
+
+      // Flood fill helper
+      function floodSegment(startIdx, assignedId) {
+        let head = 0;
+        let tail = 0;
+        queue[tail++] = startIdx;
+        regionMap[startIdx] = assignedId;
+
+        let minX = w, maxX = 0, minY = h, maxY = 0;
+        let sumX = 0, sumY = 0;
+        let rSum = 0, gSum = 0, bSum = 0;
+
+        while (head < tail) {
+          const curr = queue[head++];
+          const y = Math.floor(curr / w);
+          const x = curr - y * w;
+
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          sumX += x;
+          sumY += y;
+
+          if (refData) {
+            const p = curr * 4;
+            rSum += refData[p];
+            gSum += refData[p + 1];
+            bSum += refData[p + 2];
+          }
+
+          // 4-neighbors
+          if (x > 0 && regionMap[curr - 1] === -2) {
+            regionMap[curr - 1] = assignedId;
+            queue[tail++] = curr - 1;
+          }
+          if (x < w - 1 && regionMap[curr + 1] === -2) {
+            regionMap[curr + 1] = assignedId;
+            queue[tail++] = curr + 1;
+          }
+          if (y > 0 && regionMap[curr - w] === -2) {
+            regionMap[curr - w] = assignedId;
+            queue[tail++] = curr - w;
+          }
+          if (y < h - 1 && regionMap[curr + w] === -2) {
+            regionMap[curr + w] = assignedId;
+            queue[tail++] = curr + w;
+          }
+        }
+
+        return {
+          pixelCount: tail,
+          minX, maxX, minY, maxY,
+          centerX: Math.round(sumX / tail),
+          centerY: Math.round(sumY / tail),
+          avgR: tail ? rSum / tail : 255,
+          avgG: tail ? gSum / tail : 255,
+          avgB: tail ? bSum / tail : 255
+        };
+      }
+
+      // Step 1: Mark exterior background starting from (0,0) as region 0
+      if (regionMap[0] === -2) {
+        floodSegment(0, 0);
+      }
+
+      // Step 2: Segment all interior enclosed regions
+      let nextRegionId = 1;
+      for (let i = 0; i < w * h; i++) {
+        if (regionMap[i] === -2) {
+          const stats = floodSegment(i, nextRegionId);
+          // Filter out tiny anti-aliasing specks & micro-pores so all clickable regions are clean blocks
+          const minArea = state.mode === 'photo_edge' ? Math.max(80, (6 - state.edgeDetail) * 55) : 45;
+          if (stats.pixelCount < minArea) {
+            // Re-label speck as outline wall (-1)
+            for (let k = 0; k < stats.pixelCount; k++) {
+              regionMap[queue[k]] = -1;
+            }
+          } else {
+            // Determine target reference color for AI scoring
+            let targetColor = '#FFE0BD';
+            if (state.mode === 'photo_edge' && refData) {
+              targetColor = findClosestPaletteColor(stats.avgR, stats.avgG, stats.avgB);
+            } else {
+              // Assign smart target color for Q-Chibi regions based on vertical position & size
+              const cy = stats.centerY;
+              const cx = stats.centerX;
+              const pal = state.uploadedPalette || {
+                hair: '#A87B51',
+                skin: '#FFE0BD',
+                outfit: '#69C0FF',
+                accent: '#FF85C0'
+              };
+              if (cy < 350) {
+                targetColor = pal.hair; // Hair / Hood
+              } else if (cy >= 350 && cy <= 475) {
+                if (stats.pixelCount < 2600 && Math.abs(cx - w / 2) > 40) {
+                  targetColor = '#FFADD2'; // Blush or Eye Iris
+                } else {
+                  targetColor = pal.skin; // Face & Ears
+                }
+              } else if (cy > 475 && cy < 690) {
+                if (Math.abs(cx - w / 2) > 105) {
+                  targetColor = pal.skin; // Hands
+                } else if (stats.pixelCount < 14000) {
+                  targetColor = pal.accent; // Belly patch / Collar
+                } else {
+                  targetColor = pal.outfit; // Main outfit
+                }
+              } else {
+                targetColor = '#334155'; // Shoes
+              }
+            }
+
+            regions.push({
+              id: nextRegionId,
+              pixelCount: stats.pixelCount,
+              currentColor: null, // null = uncolored white
+              targetColor,
+              isDetail: stats.pixelCount < 3500,
+              centerX: stats.centerX,
+              centerY: stats.centerY
+            });
+            nextRegionId++;
+          }
+        }
+      }
+
+      state.outlineMask = outlineMask;
+      state.regionMap = regionMap;
+      state.regions = regions;
+      state.undoStack = [];
+      updateUndoButton();
+      renderArtwork();
+      updateProgressUI();
+    }
+
+    // ==========================================
+    // 9. Fast Pixel Renderer (Regions + Anti-Aliased Black Line Art)
+    // ==========================================
+    function renderArtwork(highlightRegionId = -1) {
+      const w = state.width;
+      const h = state.height;
+      const imgData = ctx.createImageData(w, h);
+      const data = imgData.data;
+      const rMap = state.regionMap;
+      const oMask = state.outlineMask;
+
+      // Pre-build RGB lookup table indexed by regionId
+      const numRegions = state.regions.length + 1;
+      const rLut = new Uint8Array(numRegions);
+      const gLut = new Uint8Array(numRegions);
+      const bLut = new Uint8Array(numRegions);
+
+      // Background (region 0) is pure white
+      rLut[0] = 255; gLut[0] = 255; bLut[0] = 255;
+
+      for (let i = 0; i < state.regions.length; i++) {
+        const reg = state.regions[i];
+        if (reg.currentColor) {
+          const rgb = hexToRgb(reg.currentColor);
+          rLut[reg.id] = rgb.r;
+          gLut[reg.id] = rgb.g;
+          bLut[reg.id] = rgb.b;
+        } else if (reg.id === highlightRegionId) {
+          rLut[reg.id] = 241;
+          gLut[reg.id] = 245;
+          bLut[reg.id] = 249;
+        } else {
+          rLut[reg.id] = 255;
+          gLut[reg.id] = 255;
+          bLut[reg.id] = 255;
+        }
+      }
+
+      let ghostData = null;
+      if (state.ghostOverlay && state.uploadedPalette && state.uploadedPalette.fullImageCanvas) {
+        ghostData = state.uploadedPalette.fullImageCanvas.getContext('2d').getImageData(0, 0, w, h).data;
+      }
+
+      for (let i = 0; i < w * h; i++) {
+        const p = i * 4;
+        const regId = rMap[i];
+        const maskVal = oMask[i];
+
+        if (regId === -1 || maskVal > 0) {
+          const v = 255 - maskVal;
+          data[p] = v;
+          data[p + 1] = v;
+          data[p + 2] = v;
+          data[p + 3] = 255;
+        } else {
+          let r = rLut[regId];
+          let g = gLut[regId];
+          let b = bLut[regId];
+          if (ghostData && r === 255 && g === 255 && b === 255 && regId > 0) {
+            // Subtle 22% ghost reference overlay on uncolored regions to verify contour alignment
+            r = Math.round(255 * 0.78 + ghostData[p] * 0.22);
+            g = Math.round(255 * 0.78 + ghostData[p + 1] * 0.22);
+            b = Math.round(255 * 0.78 + ghostData[p + 2] * 0.22);
+          }
+          data[p] = r;
+          data[p + 1] = g;
+          data[p + 2] = b;
+          data[p + 3] = 255;
+        }
+      }
+
+      ctx.putImageData(imgData, 0, 0);
+    }
+
+    // ==========================================
+    // 10. One-Tap Region Coloring & Undo History
+    // ==========================================
+    function getCanvasCoords(evt) {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+      const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+      const x = Math.floor(((clientX - rect.left) / rect.width) * state.width);
+      const y = Math.floor(((clientY - rect.top) / rect.height) * state.height);
+      return { x, y };
+    }
+
+    function handleCanvasTap(evt) {
+      evt.preventDefault();
+      const { x, y } = getCanvasCoords(evt);
+      if (x < 0 || x >= state.width || y < 0 || y >= state.height) return;
+
+      const idx = y * state.width + x;
+      let regId = state.regionMap[idx];
+
+      // If user tapped slightly on a black line edge, search a 6px radius for nearest fillable region
+      if (regId <= 0) {
+        const searchRadius = 6;
+        for (let r = 1; r <= searchRadius && regId <= 0; r++) {
+          for (let dy = -r; dy <= r; dy++) {
+            for (let dx = -r; dx <= r; dx++) {
+              const nx = x + dx;
+              const ny = y + dy;
+              if (nx >= 0 && nx < state.width && ny >= 0 && ny < state.height) {
+                const candidate = state.regionMap[ny * state.width + nx];
+                if (candidate > 0) {
+                  regId = candidate;
+                  break;
+                }
+              }
+            }
+            if (regId > 0) break;
+          }
+        }
+      }
+
+      if (regId <= 0) return; // Tapped outer background
+
+      const region = state.regions[regId - 1];
+      if (!region) return;
+
+      const chosenHex = PALETTE_56[state.selectedColorIdx].hex;
+      // Save snapshot for Undo
+      const newColor = chosenHex === '#FFFFFF' ? null : chosenHex;
+      if (region.currentColor === newColor) return;
+
+      state.undoStack.push(state.regions.map(r => r.currentColor));
+      if (state.undoStack.length > 30) state.undoStack.shift();
+
+      region.currentColor = newColor;
+      playTone('fill');
+      updateUndoButton();
+      renderArtwork();
+      updateProgressUI();
+    }
+
+    function updateProgressUI() {
+      const total = state.regions.length;
+      if (total === 0) return;
+      const filled = state.regions.filter(r => r.currentColor !== null).length;
+      const pct = Math.round((filled / total) * 100);
+      document.getElementById('progressBadge').textContent = `進度 ${pct}% (${filled}/${total})`;
+      document.getElementById('statusText').textContent =
+        pct === 100 ? '🎉 所有區塊已完成！可點選「提交評分」' : `已填色 ${filled} / ${total} 個區塊`;
+    }
+
+    function updateUndoButton() {
+      document.getElementById('btnUndo').disabled = state.undoStack.length === 0;
+    }
+
+    // ==========================================
+    // 11. AI Scoring Engine (D to A++)
+    // ==========================================
+    function evaluateArtworkScore() {
+      const total = state.regions.length;
+      if (total === 0) return;
+
+      const filledRegions = state.regions.filter(r => r.currentColor !== null);
+      const completionRatio = filledRegions.length / total;
+      const completionScore = Math.round(completionRatio * 100);
+
+      // 2. Color Harmony & Photo Reference Match
+      let harmonySum = 0;
+      const usedColors = new Set();
+      filledRegions.forEach(reg => {
+        usedColors.add(reg.currentColor);
+        const dist = colorDistance(reg.currentColor, reg.targetColor);
+        // Normalize distance: dist <= 180 gets high harmony, plus creative bonus
+        const matchScore = Math.max(58, Math.min(100, 105 - (dist / 6.5)));
+        harmonySum += matchScore;
+      });
+      const rawHarmony = filledRegions.length > 0 ? (harmonySum / filledRegions.length) : 0;
+      const harmonyScore = Math.round(rawHarmony * (0.4 + 0.6 * completionRatio));
+
+      // 3. Contrast & Layer Variety Score
+      let varietyRatio = 0;
+      if (filledRegions.length > 0) {
+        const idealDistinct = Math.min(6, Math.max(2, Math.ceil(total * 0.35)));
+        varietyRatio = Math.min(1, usedColors.size / idealDistinct);
+      }
+      const contrastScore = Math.round((varietyRatio * 85 + 15) * completionRatio);
+
+      // 4. Detail Precision (Eyes, Blush, Emblem)
+      const detailRegions = state.regions.filter(r => r.isDetail);
+      const filledDetails = detailRegions.filter(r => r.currentColor !== null);
+      const detailRatio = detailRegions.length > 0 ? (filledDetails.length / detailRegions.length) : completionRatio;
+      const detailScore = Math.round(detailRatio * 100);
+
+      // Weighted Total (0 - 100)
+      const weightedTotal = Math.round(
+        completionScore * 0.38 +
+        harmonyScore * 0.28 +
+        contrastScore * 0.19 +
+        detailScore * 0.15
+      );
+
+      // Determine Grade Letter (D to A++)
+      let grade = 'D';
+      let title = '未完待續的草稿';
+      let badgeGradient = 'from-slate-500 via-slate-600 to-slate-700';
+      let feedback = '';
+
+      if (weightedTotal >= 94 && completionScore >= 90) {
+        grade = 'A++';
+        title = '殿堂級神作配色大師！';
+        badgeGradient = 'from-amber-400 via-rose-500 to-purple-600';
+        feedback = '太驚艷了！所有輪廓區塊皆精準填滿，五官細節與主體色調層次分明，色彩和諧度與飽和度平衡達到專業遊戲美術水準！';
+      } else if (weightedTotal >= 86) {
+        grade = 'A+';
+        title = '令人驚艷的色彩藝術家！';
+        badgeGradient = 'from-amber-400 via-orange-500 to-rose-500';
+        feedback = '完成度極高！角色的主色調與細節點綴非常有活力，冷暖對比自然吸睛。若想挑戰 A++，可微調局部小區塊的明暗對比。';
+      } else if (weightedTotal >= 76) {
+        grade = 'A';
+        title = '表現優異的質感畫師！';
+        badgeGradient = 'from-emerald-400 via-teal-500 to-cyan-600';
+        feedback = '整體配色乾淨舒適，主要區塊都已完整上色！建議可以多嘗試在五官、腮紅或配件區塊加入跳色，讓視覺焦點更突出。';
+      } else if (weightedTotal >= 64) {
+        grade = 'B';
+        title = '頗具潛力的色彩達人！';
+        badgeGradient = 'from-sky-400 via-blue-500 to-indigo-600';
+        feedback = '主體已經初具雛形，選色很有個人風格！目前還有部分細部色塊尚未填滿，點選「返回修改色塊」補齊空白處即可大幅提分。';
+      } else if (weightedTotal >= 45) {
+        grade = 'C';
+        title = '正在起步的創作新星';
+        badgeGradient = 'from-violet-400 via-purple-500 to-indigo-700';
+        feedback = '已經完成了初步的色塊鋪陳！畫面上還有較多未上色的留白區域，建議使用下方 56 色盤繼續填滿剩餘區塊。';
+      } else {
+        grade = 'D';
+        title = '剛開始動筆的素描線稿';
+        badgeGradient = 'from-slate-400 via-slate-500 to-slate-700';
+        feedback = '目前上色的區塊較少喔！請先從下方 56 色盤挑選喜歡的顏色，直接點擊角色身上的空白區塊，系統就會自動幫該區域完整上色。';
+      }
+
+      // Update Modal DOM
+      const badgeEl = document.getElementById('gradeBadge');
+      badgeEl.className = `grade-badge-anim w-24 h-24 rounded-3xl bg-gradient-to-br ${badgeGradient} text-white flex flex-col items-center justify-center shadow-xl`;
+      document.getElementById('gradeLetter').textContent = grade;
+      document.getElementById('gradeTitle').textContent = title;
+      document.getElementById('gradeTotalScore').textContent = `AI 綜合評分：${weightedTotal} / 100`;
+
+      document.getElementById('metricCompletionVal').textContent = `${completionScore}%`;
+      document.getElementById('metricCompletionBar').style.width = `${completionScore}%`;
+
+      document.getElementById('metricHarmonyVal').textContent = `${harmonyScore}%`;
+      document.getElementById('metricHarmonyBar').style.width = `${harmonyScore}%`;
+
+      document.getElementById('metricContrastVal').textContent = `${contrastScore}%`;
+      document.getElementById('metricContrastBar').style.width = `${contrastScore}%`;
+
+      document.getElementById('metricDetailVal').textContent = `${detailScore}%`;
+      document.getElementById('metricDetailBar').style.width = `${detailScore}%`;
+
+      document.getElementById('aiFeedbackText').textContent = feedback;
+
+      document.getElementById('scoreModal').classList.remove('hidden');
+      playTone('complete');
+    }
+
+    // ==========================================
+    // 12. Rebuild Scene Pipeline
+    // ==========================================
+    function rebuildActiveOutline() {
+      if (state.mode === 'photo_edge' && state.uploadedImage) {
+        const edgeCanvas = generatePhotoContourCanvas(
+          state.uploadedImage,
+          state.edgeDetail,
+          state.edgeLineWeight
+        );
+        buildRegionsFromOutlineCanvas(edgeCanvas);
+      } else {
+        const chibiCanvas = drawChibiOutlineToOffscreen(state.presetIndex);
+        buildRegionsFromOutlineCanvas(chibiCanvas);
+      }
+    }
+
+    // ==========================================
+    // 13. Event Listeners & Interactive Controls
+    // ==========================================
+    canvas.addEventListener('pointerdown', handleCanvasTap);
+
+    // Camera Upload Button
+    document.getElementById('btnCameraUpload').addEventListener('click', () => {
+      document.getElementById('photoInput').click();
+    });
+
+    document.getElementById('photoInput').addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const img = new Image();
+        img.onload = () => {
+          state.uploadedImage = img;
+          state.hasUploadedPhoto = true;
+          state.uploadedPalette = extractPhotoPalette(img);
+
+          // Show reference thumbnail
+          const refImg = document.getElementById('refPhotoImg');
+          refImg.src = ev.target.result;
+          document.getElementById('refPhotoCard').classList.remove('hidden');
+
+          // Trigger AI Scanning Animation
+          const overlay = document.getElementById('aiScanOverlay');
+          overlay.classList.remove('hidden');
+          document.getElementById('aiScanTitle').textContent = 'AI 正在擷取照片輪廓並產生封閉色塊...';
+
+          setTimeout(() => {
+            // Switch to Photo Edge mode automatically on upload so user sees their photo's extracted contour immediately
+            setContourMode('photo_edge');
+            overlay.classList.add('hidden');
+            playTone('complete');
+          }, 950);
+        };
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(file);
+      e.target.value = '';
+    });
+
+    // Mode Switching (Q-Chibi vs Photo Edge)
+    function setContourMode(mode) {
+      state.mode = mode;
+      const btnChibi = document.getElementById('btnModeChibi');
+      const btnEdge = document.getElementById('btnModePhotoEdge');
+
+      if (mode === 'chibi') {
+        btnChibi.className = 'px-2 py-0.5 rounded-full bg-slate-900 text-white font-medium transition';
+        btnEdge.className = 'px-2 py-0.5 rounded-full text-slate-600 hover:bg-slate-200 font-medium transition';
+        document.getElementById('edgeControlPanel').classList.add('hidden');
+      } else {
+        btnEdge.className = 'px-2 py-0.5 rounded-full bg-slate-900 text-white font-medium transition';
+        btnChibi.className = 'px-2 py-0.5 rounded-full text-slate-600 hover:bg-slate-200 font-medium transition';
+      }
+      rebuildActiveOutline();
+    }
+
+    document.getElementById('btnModeChibi').addEventListener('click', () => {
+      setContourMode('chibi');
+    });
+
+    document.getElementById('btnModePhotoEdge').addEventListener('click', () => {
+      if (!state.uploadedImage) {
+        document.getElementById('photoInput').click();
+        return;
+      }
+      setContourMode('photo_edge');
+    });
+
+    document.getElementById('btnNextPreset').addEventListener('click', () => {
+      state.presetIndex = (state.presetIndex + 1) % 3;
+      setContourMode('chibi');
+    });
+
+    // Edge Sensitivity Sliders
+    document.getElementById('btnAdjustEdge').addEventListener('click', () => {
+      const panel = document.getElementById('edgeControlPanel');
+      panel.classList.toggle('hidden');
+    });
+
+    document.getElementById('btnCloseEdgePanel').addEventListener('click', () => {
+      document.getElementById('edgeControlPanel').classList.add('hidden');
+    });
+
+    document.getElementById('sliderDetail').addEventListener('input', (e) => {
+      state.edgeDetail = parseInt(e.target.value, 10);
+      document.getElementById('valDetail').textContent = state.edgeDetail;
+      if (state.mode === 'photo_edge' && state.uploadedImage) {
+        rebuildActiveOutline();
+      }
+    });
+
+    document.getElementById('sliderLineWeight').addEventListener('input', (e) => {
+      state.edgeLineWeight = parseInt(e.target.value, 10);
+      document.getElementById('valLineWeight').textContent = state.edgeLineWeight;
+      if (state.mode === 'photo_edge' && state.uploadedImage) {
+        rebuildActiveOutline();
+      }
+    });
+
+    document.getElementById('sliderDenoise').addEventListener('input', (e) => {
+      state.edgeDenoise = parseInt(e.target.value, 10);
+      document.getElementById('valDenoise').textContent = state.edgeDenoise;
+      if (state.mode === 'photo_edge' && state.uploadedImage) {
+        rebuildActiveOutline();
+      }
+    });
+
+    function setScanMethod(method) {
+      state.scanMethod = method;
+      const modes = [
+        { id: 'btnScanHybrid', key: 'hybrid' },
+        { id: 'btnScanInk', key: 'ink' },
+        { id: 'btnScanBlock', key: 'block' }
+      ];
+      modes.forEach(m => {
+        const el = document.getElementById(m.id);
+        if (m.key === method) {
+          el.className = 'flex-1 py-1 rounded-md bg-slate-900 text-white font-semibold text-[10px] transition';
+        } else {
+          el.className = 'flex-1 py-1 rounded-md text-slate-600 hover:bg-slate-200 font-semibold text-[10px] transition';
+        }
+      });
+      if (state.mode === 'photo_edge' && state.uploadedImage) {
+        rebuildActiveOutline();
+      }
+    }
+
+    document.getElementById('btnScanHybrid').addEventListener('click', () => setScanMethod('hybrid'));
+    document.getElementById('btnScanInk').addEventListener('click', () => setScanMethod('ink'));
+    document.getElementById('btnScanBlock').addEventListener('click', () => setScanMethod('block'));
+
+    document.getElementById('chkGhostOverlay').addEventListener('change', (e) => {
+      state.ghostOverlay = e.target.checked;
+      renderArtwork();
+    });
+
+    document.getElementById('btnRescanNow').addEventListener('click', () => {
+      if (state.uploadedImage) {
+        setContourMode('photo_edge');
+      }
+    });
+
+    // Undo & Reset
+    document.getElementById('btnUndo').addEventListener('click', () => {
+      if (state.undoStack.length === 0) return;
+      const prev = state.undoStack.pop();
+      state.regions.forEach((r, idx) => {
+        r.currentColor = prev[idx];
+      });
+      updateUndoButton();
+      renderArtwork();
+      updateProgressUI();
+    });
+
+    document.getElementById('btnReset').addEventListener('click', () => {
+      const hasAnyColor = state.regions.some(r => r.currentColor !== null);
+      if (!hasAnyColor) return;
+      state.undoStack.push(state.regions.map(r => r.currentColor));
+      state.regions.forEach(r => { r.currentColor = null; });
+      updateUndoButton();
+      renderArtwork();
+      updateProgressUI();
+    });
+
+    // AI Smart Hint / Auto Fill Unfinished Regions
+    document.getElementById('btnAutoHint').addEventListener('click', () => {
+      state.undoStack.push(state.regions.map(r => r.currentColor));
+      const uncolored = state.regions.filter(r => r.currentColor === null);
+      const targets = uncolored.length > 0 ? uncolored : state.regions;
+      targets.forEach(reg => {
+        reg.currentColor = reg.targetColor;
+      });
+      playTone('fill');
+      updateUndoButton();
+      renderArtwork();
+      updateProgressUI();
+    });
+
+    // Submit & Modify Modal Actions
+    document.getElementById('btnSubmitScore').addEventListener('click', () => {
+      evaluateArtworkScore();
+    });
+
+    document.getElementById('btnBackToModify').addEventListener('click', () => {
+      document.getElementById('scoreModal').classList.add('hidden');
+    });
+
+    document.getElementById('btnDownloadArt').addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.download = `ai-coloring-artwork-${Date.now()}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    });
+
+    // Pure Minimal UI Toggle (Hides auxiliary chrome to match the strict Turn 1 mockup)
+    document.getElementById('btnToggleMinimal').addEventListener('click', (e) => {
+      state.minimalMode = !state.minimalMode;
+      e.currentTarget.textContent = `純淨模式: ${state.minimalMode ? '開' : '關'}`;
+      document.getElementById('leftControls').classList.toggle('invisible', state.minimalMode);
+      document.getElementById('rightControls').classList.toggle('invisible', state.minimalMode);
+      document.getElementById('subToolbar').classList.toggle('hidden', state.minimalMode);
+      document.getElementById('colorStatusStrip').classList.toggle('hidden', state.minimalMode);
+    });
+
+    // Sound Toggle
+    document.getElementById('btnSoundToggle').addEventListener('click', (e) => {
+      state.soundEnabled = !state.soundEnabled;
+      e.currentTarget.textContent = state.soundEnabled ? '🔊 音效' : '🔇 靜音';
+    });
+
+    // Initialize App on Load
+    window.addEventListener('load', () => {
+      initPaletteUI();
+      rebuildActiveOutline();
+    });
+  </script>
+</body>
+</html>
